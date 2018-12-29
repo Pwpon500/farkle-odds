@@ -5,8 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
-	"math"
-	"math/rand"
+	"os"
 	"strconv"
 )
 
@@ -16,86 +15,102 @@ type Coefficients struct {
 }
 
 var (
-	dice     = flag.Int("dice", 6, "number of dice to roll")
-	curScore = flag.Int("score", 0, "current score")
-	maxDepth = flag.Int("depth", 1, "maximum depth for more rolls")
-	//mVals    = []float64{0.3333333333333333, 0.5555555555555556, 0.7222222222222222, 0.8425925925925926, 0.9228395061728395, 0.9768518518518519}
-	//bVals    = []float64{25, 50, 83.56481481481481, 132.71604938271605, 203.2857510288066, 388.5352366255144}
-	mVals = []float64{0.26891084419308525, 0.3863731313184077, 0.5395296126895001, 0.6460222781185294, 0.7322907852593873, 0.8067325325792554}
-	bVals = []float64{187.7691217568772, 161.72911616661224, 177.01463179559335, 224.53924356873253, 303.21985133373, 502.80242532718756}
+	dice      = flag.Int("dice", 6, "number of dice to roll")
+	curScore  = flag.Int("score", 0, "current score")
+	maxDepth  = flag.Int("depth", 50, "depth of linear approximation to use")
+	calculate = flag.Bool("calculate", false, "use actual backtracking not just approximation")
+	generate  = flag.Bool("generate", false, "whether or not to just generate coefficients")
+	coeffs    = Coefficients{make([]float64, 6), make([]float64, 6)}
 )
 
 func main() {
 	flag.Parse()
 
-	//fmt.Println(backtrack([]int{}, *dice, *curScore, 0))
-	fmt.Println(approxScore(*dice, *curScore))
-	//writeVals(mVals, bVals, 1)
-
-	//generateCoeffs()
-
-	fmt.Println("done")
+	if *generate {
+		generateCoeffs()
+	} else {
+		fName := "coeffs/" + strconv.Itoa(*maxDepth) + "_coeffs.json"
+		if _, err := os.Stat(fName); os.IsNotExist(err) {
+			fmt.Println("Coefficients have not been generated. Generating them now.")
+			generateCoeffs()
+		}
+		coeffs = readVals(*maxDepth)
+		if !*calculate {
+			fmt.Println(approxScore(*dice, *curScore))
+		} else {
+			fmt.Println(backtrack([]int{}, *dice, *curScore))
+		}
+	}
 }
 
 func generateCoeffs() {
-	for i := 2; i <= 50; i++ {
+	for i := 1; i <= 50; i++ {
 		newM := []float64{}
 		newB := []float64{}
 		for j := 1; j <= 6; j++ {
 			// find high and low vals for this iteration
-			lowVal := backtrack([]int{}, j, 0, 0)
-			highVal := backtrack([]int{}, j, 400, 0)
+			lowVal := backtrack([]int{}, j, 0)
+			highVal := backtrack([]int{}, j, 400)
 			// use high and low vals to generate line
 			newM = append(newM, (highVal-lowVal)/400)
 			newB = append(newB, lowVal)
-			// test generated line
-			for k := 0; k < 5; k++ {
-				toCheck := rand.Intn(400)
-				realVal := backtrack([]int{}, j, toCheck, 0)
-				approxVal := newM[len(newM)-1]*float64(toCheck) + newB[len(newB)-1]
-				if math.Abs(realVal-approxVal) > .00001 {
-					fmt.Println("The model broke down at die ", j, " and iteration ", i, ".")
-					fmt.Println("Real Value: ", realVal, " Approx Value: ", approxVal)
-				}
-			}
+			// test generated lines
+			// test removed because it was too sensitive. A little bit of error is okay for the purposes of this experiment.
+			/*
+				for k := 0; k < 5; k++ {
+					toCheck := rand.Intn(400)
+					realVal := backtrack([]int{}, j, toCheck, 0)
+					approxVal := newM[len(newM)-1]*float64(toCheck) + newB[len(newB)-1]
+					if math.Abs(realVal-approxVal) > 1 {
+						fmt.Println("The model broke down at die ", j, " and iteration ", i, ".")
+						fmt.Println("Start value: ", toCheck)
+						fmt.Println("Real Value: ", realVal, " Approx Value: ", approxVal)
+					}
+				}*/
 		}
-		mVals = newM
-		bVals = newB
-		writeVals(mVals, bVals, i)
-		fmt.Println("Finished iteration ", i, ".")
+		coeffs.MCoeffs = newM
+		coeffs.BCoeffs = newB
+		writeVals(newM, newB, i)
 	}
+	fmt.Println("Coefficients generated and written")
 }
 
 func approxScore(toRoll int, score int) float64 {
-	return mVals[toRoll-1]*float64(score) + bVals[toRoll-1]
+	return coeffs.MCoeffs[toRoll-1]*float64(score) + coeffs.BCoeffs[toRoll-1]
 }
 
 func writeVals(m []float64, b []float64, depth int) {
-	coeffs := Coefficients{m, b}
-	toWrite, err := json.Marshal(coeffs)
+	writingCoeffs := Coefficients{m, b}
+	toWrite, err := json.Marshal(writingCoeffs)
 	handleErr(err)
-	err = ioutil.WriteFile(strconv.Itoa(depth)+"_coeffs.json", toWrite, 0644)
+	err = ioutil.WriteFile("coeffs/"+strconv.Itoa(depth)+"_coeffs.json", toWrite, 0644)
 	handleErr(err)
 }
 
+func readVals(depth int) Coefficients {
+	vals, err := ioutil.ReadFile("coeffs/" + strconv.Itoa(depth) + "_coeffs.json")
+	handleErr(err)
+	var toReturn Coefficients
+	err = json.Unmarshal(vals, &toReturn)
+	handleErr(err)
+	return toReturn
+}
+
 // backtrack to find all possible roll combinations for a given number of dice
-func backtrack(rolls []int, toRoll int, score int, depth int) float64 {
+func backtrack(rolls []int, toRoll int, score int) float64 {
 	if toRoll == 0 {
-		return float64(scoreRoll(rolls, score, depth))
-	}
-	if depth >= *maxDepth {
-		return 0
+		return float64(scoreRoll(rolls, score))
 	}
 
 	sum := 0.0
 	for i := 1; i <= 6; i++ {
-		sum += backtrack(append(rolls, i), toRoll-1, score, depth)
+		sum += backtrack(append(rolls, i), toRoll-1, score)
 	}
 	return sum / 6
 }
 
 // score a roll by finding the number of occurences of each number and scoring roll
-func scoreRoll(rolls []int, score int, depth int) float64 {
+func scoreRoll(rolls []int, score int) float64 {
 	var occurences [6]int
 	for _, elem := range rolls {
 		occurences[elem-1]++
@@ -164,7 +179,6 @@ func scoreRoll(rolls []int, score int, depth int) float64 {
 
 	toReturn += float64(score)
 	expectedRoll := approxScore(numLeft, int(toReturn))
-	//expectedRoll := backtrack([]int{}, numLeft, int(toReturn), depth+1)
 	if expectedRoll > float64(toReturn) {
 		toReturn = expectedRoll
 	}
